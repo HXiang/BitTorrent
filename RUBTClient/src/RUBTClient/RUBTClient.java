@@ -723,7 +723,7 @@ public class RUBTClient {
 		return null;
 	}
 
-	public static ArrayList<numPieces> findRarestPiece() {
+	public static ArrayList<numPieces> findRarestPiece() { //should find and sort rarest pieces
 		ArrayList<numPieces> pieceCounts = new ArrayList<numPieces>(torrentInfo.piece_hashes.length);
 		for(int n=0; n < torrentInfo.piece_hashes.length; n++) {
 			pieceCounts.add(new numPieces(n)); //filling with piece indexes from 0 to pieces_hashes.length
@@ -742,7 +742,7 @@ public class RUBTClient {
 		
 	}
 	
-	private static class numPieces implements Comparable<numPieces> {
+	private static class numPieces implements Comparable<numPieces> { //class which creates list of sorted pieces+frequency
 		private int pieceInd;
 		private Integer ubiquity;
 		
@@ -750,7 +750,7 @@ public class RUBTClient {
 			return pieceInd;
 		}
 		
-		public int getUbiquity() { //returns int but actually returns Integer, hmm...
+		public int getUbiquity() { 
 			return ubiquity;
 		}
 		
