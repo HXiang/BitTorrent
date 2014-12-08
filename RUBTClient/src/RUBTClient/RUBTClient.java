@@ -711,7 +711,7 @@ public class RUBTClient {
 		}
 		return bytes;
 	}
-
+/*** rarest piece stuff, commented out for now
 	public static ArrayList<Integer> locatePeer(String peerID) {
 		for(int i=0; i < peerList.size(); i++) {
 			if(peerID == peerList.get(i).peerid) {
@@ -767,7 +767,7 @@ public class RUBTClient {
 			return ubiquity.compareTo(other.ubiquity);
 		}
 	}
-
+***/
 
 	public static void setAvailablePieces(ArrayList<Integer> piecesHeld, ByteBuffer message) {
 		int index = 0;
