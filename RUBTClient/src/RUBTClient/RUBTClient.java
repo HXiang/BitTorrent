@@ -1,8 +1,3 @@
-/**
- * @author Raymond Sun
- * @author Henry Xiang
- */
-
 package RUBTClient;
 
 import java.io.DataInputStream;
@@ -28,6 +23,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.Collections;
+import java.util.List;
 import java.util.Random;
 import java.util.Scanner;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -51,11 +48,15 @@ public class RUBTClient {
 	static String ourID;
 	static boolean startedDownloading;
 	static LinkedBlockingQueue<Integer> trackerAccess;
+	static String[] args;
 	static boolean programEnd;
 	static int downloaded;
 	static int uploaded;
 	static int minInterval;
-
+	static List<Peer> peerList = Collections.synchronizedList(new ArrayList<Peer>()); //peerList used for rarest piece. Set equal to the initial peerList from our TrackerMessage
+	static String thePeerID;
+	static LinkedBlockingQueue<Integer> peerIDLocker;
+	
 	private static class SocketSpawner implements Runnable {
 
 		@Override
@@ -78,6 +79,7 @@ public class RUBTClient {
 
 	private static class HandshakeEstablisher implements Runnable {
 		private Socket peerConnection;
+		//public static String currPeerID;
 		private HandshakeEstablisher() {
 
 		}
@@ -139,9 +141,11 @@ public class RUBTClient {
 						return;
 					}
 					incHandshake.get(reader);
+					peerIDLocker.take();
+					thePeerID = new String(reader, "UTF-8"); //Getting the peerID so I can search through our list and update "bitfields"
+					System.out.println("WHAT" + thePeerID);
 					System.out.println("Handshake complete.");
 					connectionsEstablished.put(peerConnection);
-
 					
 				}catch (Exception e) {
 					if(e instanceof SocketTimeoutException) {
@@ -167,13 +171,15 @@ public class RUBTClient {
 
 	private static class PeerConnectionSender implements Runnable {
 		MessageHandler link;
+		String currPeerID;
 		boolean peerIsChoking = true;
 		boolean peerIsInterested = false;
 		boolean weAreChoking = true;
 		boolean weAreInterested = false;
 		LinkedBlockingQueue<ByteBuffer> messagesIncoming;
-		private PeerConnectionSender(MessageHandler l) {
+		private PeerConnectionSender(MessageHandler l, String currPeerId) {
 			link = l;
+			currPeerID = currPeerId;
 			peerIsChoking = true;
 			peerIsInterested = false;
 			weAreChoking = true;
@@ -182,7 +188,6 @@ public class RUBTClient {
 		}
 		@Override
 		public void run() {
-
 			new Thread(new PeerConnectionListener(link, messagesIncoming)).start();
 			long timeSinceLast = System.currentTimeMillis();
 			long timeSinceAnnounce = System.currentTimeMillis();
@@ -200,8 +205,10 @@ public class RUBTClient {
 
 			ByteBuffer message = null;
 			int messageID = -1;
+			ArrayList<NumPieces> pieceCounts = new ArrayList<NumPieces>(torrentInfo.piece_hashes.length); //list of sorted, rarest pieces
 			outerloop:
 			while(!programEnd) {
+				ArrayList<Integer> currPeerBitfield = locatePeer(currPeerID); //Finding our current peer's list.
 				try {
 					trackerAccess.take();
 					if(System.currentTimeMillis() - timeSinceAnnounce > 120000) {
@@ -255,28 +262,36 @@ public class RUBTClient {
 				}
 				if(piecesHeldByPeer.size() > 0 && weAreInterested && !peerIsChoking) {  //creates request message, sends to peer
 					try {
-						pieceAccess.take();
+						 /*****THIS IS WHERE I REQUEST SPECIFIC PIECES*****/
+						for(int r=0; r < pieceCounts.size(); r++) {
+
+							if(pieceCounts.get(r) != null && !piecesCompleted[r]) {
+								pieceAccess.take();
+								ByteBuffer requestBuffer = ByteBuffer.allocate(12);
+								int thePiece = pieceCounts.get(r).getPieceInd();
+								requestBuffer.putInt(thePiece);
+								requestBuffer.putInt(pieceCompletionIndex[thePiece]);
+								int requestAmount = pieceData[thePiece].capacity();
+								int amountRemaining = 0;
+								for(boolean done:piecesCompleted) {
+									if(done)
+										amountRemaining += pieceData[thePiece].capacity(); //adding up everything that's done
+								}
+								amountRemaining = torrentInfo.file_length - amountRemaining; //calculating what there still is to download
+								if(amountRemaining < requestAmount) { //if the amount remaining is less than the piece_length
+									requestAmount = amountRemaining;
+									pieceData[thePiece] = ByteBuffer.allocate(requestAmount);
+								}
+								requestBuffer.putInt(requestAmount);
+								//System.out.println("Request amount: "+requestAmount);
+								pieceAccess.add(1);
+								timeSinceLast = System.currentTimeMillis();
+								link.sendMessage(MessageHandler.REQUEST, requestBuffer.array());
+								break;
+							}
+						}
 						//System.out.println("Piece requested: "+piecesHeldByPeer.get(0));
-						ByteBuffer requestBuffer = ByteBuffer.allocate(12);
-						int thePiece = piecesHeldByPeer.get(0);
-						requestBuffer.putInt(thePiece);
-						requestBuffer.putInt(pieceCompletionIndex[thePiece]);
-						int requestAmount = pieceData[thePiece].capacity();
-						int amountRemaining = 0;
-						for(boolean done:piecesCompleted) {
-							if(done)
-								amountRemaining += pieceData[thePiece].capacity(); //adding up everything that's done
-						}
-						amountRemaining = torrentInfo.file_length - amountRemaining; //calculating what there still is to download
-						if(amountRemaining < requestAmount) { //if the amount remaining is less than the piece_length
-							requestAmount = amountRemaining;
-							pieceData[thePiece] = ByteBuffer.allocate(requestAmount);
-						}
-						requestBuffer.putInt(requestAmount);
-						//System.out.println("Request amount: "+requestAmount);
-						pieceAccess.add(1);
-						timeSinceLast = System.currentTimeMillis();
-						link.sendMessage(MessageHandler.REQUEST, requestBuffer.array());
+
 					} catch (Exception e) {
 						if(e instanceof SocketException) {
 							break;
@@ -365,16 +380,34 @@ public class RUBTClient {
 					break;
 				case MessageHandler.HAVE:
 					System.out.println("Peer received piece "+message.getInt());
+					int piece = message.getInt();
+					for(int i=0; i<currPeerBitfield.size(); i++) { //for updating the peer's "bitfields"
+						if(currPeerBitfield.get(i)==piece) {
+							break;
+						}else if(i==currPeerBitfield.size()-1) {
+							currPeerBitfield.add(piece);
+						}
+					}
+					pieceCounts.get(message.getInt()).moreUbiquity();
+					//setAvailablePieces(locatePeer(currPeerID), message);
 					break;
 				case MessageHandler.BITFIELD:
 					try{
 						pieceAccess.take();
 						setAvailablePieces(piecesHeldByPeer, message);
+						setAvailablePieces(currPeerBitfield, message);
+						for(int i=0; i < peerList.size(); i++) {
+							if(currPeerID.equals(peerList.get(i).peerid)) {
+								peerList.get(i).bitfield = currPeerBitfield;
+							}
+						}
+						pieceCounts = findRarestPiece();
 						pieceAccess.add(1);
 					} catch (Exception e) {
 						if(e instanceof SocketException) {
 							break;
 						}
+						e.printStackTrace();
 						System.err.println("Could not update using bitfield.");
 					}
 					break;	
@@ -461,6 +494,26 @@ public class RUBTClient {
 							}
 						} catch (NoSuchAlgorithmException e) {
 							e.printStackTrace();
+						}
+						try {
+							RandomAccessFile file = new RandomAccessFile(args[1], "rw");
+							FileOutputStream fileOut = new FileOutputStream("progress.ser");
+							ObjectOutputStream out = new ObjectOutputStream(fileOut);
+							out.writeObject(new BTData(downloaded, uploaded, piecesCompleted));
+							for(int i = 0; i < piecesCompleted.length; i++) {
+								if(piecesCompleted[i]) {
+									file.seek(i * torrentInfo.piece_length);
+									file.write(pieceData[i].array());		        	
+								}
+							}
+							out.close();
+							fileOut.close();
+							file.close();
+
+						} catch (Exception e2) {
+							System.err.println("File unopenable.");
+							e2.printStackTrace();
+							return;
 						}
 						ByteBuffer pieceID = ByteBuffer.allocate(4);
 						pieceID.putInt(pieceInd);
@@ -550,13 +603,14 @@ public class RUBTClient {
 	}
 
 	private static class PeerConnectionEstablisher implements Runnable {
-
+		
 		@Override
 		public void run() {
 			try{
 				Socket peerConnection = connectionsEstablished.take();
 				while(peerConnection.getPort() != 8888) {
-					new Thread(new PeerConnectionSender(new MessageHandler(peerConnection))).start();
+					new Thread(new PeerConnectionSender(new MessageHandler(peerConnection), thePeerID)).start();
+					peerIDLocker.put(1);
 					peerConnection = connectionsEstablished.take();
 				}
 				System.out.println("Connection establisher was closed.");
@@ -711,10 +765,11 @@ public class RUBTClient {
 		}
 		return bytes;
 	}
-/*** rarest piece stuff, commented out for now
+
+	
 	public static ArrayList<Integer> locatePeer(String peerID) {
 		for(int i=0; i < peerList.size(); i++) {
-			if(peerID == peerList.get(i).peerid) {
+			if(peerID.equals(peerList.get(i).peerid)) {
 				return peerList.get(i).bitfield;
 			}
 		}
@@ -723,10 +778,10 @@ public class RUBTClient {
 		return null;
 	}
 
-	public static ArrayList<numPieces> findRarestPiece() { //should find and sort rarest pieces
-		ArrayList<numPieces> pieceCounts = new ArrayList<numPieces>(torrentInfo.piece_hashes.length);
+	public static ArrayList<NumPieces> findRarestPiece() {
+		ArrayList<NumPieces> pieceCounts = new ArrayList<NumPieces>(torrentInfo.piece_hashes.length);
 		for(int n=0; n < torrentInfo.piece_hashes.length; n++) {
-			pieceCounts.add(new numPieces(n)); //filling with piece indexes from 0 to pieces_hashes.length
+			pieceCounts.add(new NumPieces(n)); //filling with piece indexes from 0 to pieces_hashes.length
 		}
 		for(int i=0; i < peerList.size(); i++) { //finding the pieces in the peerlist peers' bitfields and adding to ubiquity if matches are found
 			for(int x=0; x < pieceCounts.size(); x++) {
@@ -742,7 +797,7 @@ public class RUBTClient {
 		
 	}
 	
-	private static class numPieces implements Comparable<numPieces> { //class which creates list of sorted pieces+frequency
+	private static class NumPieces implements Comparable<NumPieces> {
 		private int pieceInd;
 		private Integer ubiquity;
 		
@@ -750,24 +805,19 @@ public class RUBTClient {
 			return pieceInd;
 		}
 		
-		public int getUbiquity() { 
-			return ubiquity;
-		}
-		
 		public void moreUbiquity() {
 			ubiquity++;
 		}
 		
-		public numPieces(int pieceInd) {
+		public NumPieces(int pieceInd) {
 			this.pieceInd = pieceInd;
 			this.ubiquity = 0;
 		}
 		
-		public int compareTo(numPieces other) {
+		public int compareTo(NumPieces other) {
 			return ubiquity.compareTo(other.ubiquity);
 		}
 	}
-***/
 
 	public static void setAvailablePieces(ArrayList<Integer> piecesHeld, ByteBuffer message) {
 		int index = 0;
@@ -809,9 +859,16 @@ public class RUBTClient {
 			System.out.println("Sorry, wrong number of args inputted");
 			return;
 		}
+		RUBTClient.args = args;
 		torrentInfo = parseFile(args[0]);
 		pieceAccess = new LinkedBlockingQueue<Integer>();
-
+		peerIDLocker = new LinkedBlockingQueue<Integer>();
+		try {
+			peerIDLocker.put(1);
+		} catch (InterruptedException e3) {
+			// TODO Auto-generated catch block
+			e3.printStackTrace();
+		}
 		piecesCompleted = new boolean[torrentInfo.piece_hashes.length];
 
 		programEnd = false;
@@ -858,9 +915,9 @@ public class RUBTClient {
 		TrackerMessage tm = new TrackerMessage(response);
 
 
-
 		pieceCompletionIndex = new int[torrentInfo.piece_hashes.length];
 		ArrayList<Peer> connectPeers = getValidPeers(tm);
+		peerList = getValidPeers(tm); //initialize our peerList with list of connected/valid peers
 		minInterval = tm.minInterval;
 		trackerAccess = new LinkedBlockingQueue<Integer>();
 		trackerAccess.add(1);
@@ -880,18 +937,17 @@ public class RUBTClient {
 				}
 			}
 		}
+		HandshakeEstablisher diplomat = new HandshakeEstablisher();
+		Thread b = new Thread(diplomat);
+		b.start();
 
 		PeerConnectionEstablisher joiner = new PeerConnectionEstablisher();
 		Thread a = new Thread(joiner);
 		a.start();
-		HandshakeEstablisher diplomat = new HandshakeEstablisher();
-		Thread b = new Thread(diplomat);
-		b.start();
+
 		SocketSpawner socketListening = new SocketSpawner();
 		Thread c = new Thread(socketListening);
 		c.start();
-
-
 
 		Scanner sc = new Scanner(System.in);
 		sc.nextLine();
