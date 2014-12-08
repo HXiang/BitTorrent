@@ -56,6 +56,7 @@ public class RUBTClient {
 	static List<Peer> peerList = Collections.synchronizedList(new ArrayList<Peer>()); //peerList used for rarest piece. Set equal to the initial peerList from our TrackerMessage
 	static String thePeerID;
 	static LinkedBlockingQueue<Integer> peerIDLocker;
+	static LinkedBlockingQueue<Integer> optimisticUnchoke;
 	
 	private static class SocketSpawner implements Runnable {
 
@@ -172,23 +173,25 @@ public class RUBTClient {
 	private static class PeerConnectionSender implements Runnable {
 		MessageHandler link;
 		String currPeerID;
-		boolean peerIsChoking = true;
-		boolean peerIsInterested = false;
-		boolean weAreChoking = true;
-		boolean weAreInterested = false;
+		boolean peerIsChoking;
+		boolean peerIsInterested;
+		boolean weAreInterested;
+		ArrayList<Integer> weAreChoking;
 		LinkedBlockingQueue<ByteBuffer> messagesIncoming;
 		private PeerConnectionSender(MessageHandler l, String currPeerId) {
 			link = l;
 			currPeerID = currPeerId;
 			peerIsChoking = true;
 			peerIsInterested = false;
-			weAreChoking = true;
 			weAreInterested = false;
+			weAreChoking = new ArrayList<Integer>();
+			weAreChoking.add(1);
 			messagesIncoming = new LinkedBlockingQueue<ByteBuffer>();
 		}
 		@Override
 		public void run() {
 			new Thread(new PeerConnectionListener(link, messagesIncoming)).start();
+			new Thread(new PeerConnectionChoker(link, weAreChoking));
 			long timeSinceLast = System.currentTimeMillis();
 			long timeSinceAnnounce = System.currentTimeMillis();
 			ByteBuffer[] pieceHashes = torrentInfo.piece_hashes;
@@ -350,7 +353,7 @@ public class RUBTClient {
 					break;
 				case MessageHandler.INTERESTED:
 					System.out.println("Peer is interested.");
-					if(weAreChoking) {
+					if(weAreChoking.size() == 1) {
 						try {
 							link.sendMessage(MessageHandler.UNCHOKE);
 						} catch (IOException e2) {
@@ -362,14 +365,15 @@ public class RUBTClient {
 							e2.printStackTrace();
 						}
 					}
-					weAreChoking = false;
+					weAreChoking.remove(0);
 					peerIsInterested = true;
 					break;
 				case MessageHandler.UNINTERESTED:
 					System.out.println("Peer is uninterested.");
-					if(!weAreChoking) {
+					if(weAreChoking.size() == 0) {
 						try {
 							link.sendMessage(MessageHandler.CHOKE);
+							weAreChoking.add(1);
 						} catch (IOException e3) {
 							if(e3 instanceof SocketException) {
 								break;
@@ -413,7 +417,7 @@ public class RUBTClient {
 					break;	
 				case MessageHandler.REQUEST:
 					System.out.println("Peer has requested a piece.");
-					if(weAreChoking)
+					if(weAreChoking.size() == 1)
 						break;
 					if(!peerIsInterested)
 						break;
@@ -600,6 +604,36 @@ public class RUBTClient {
 
 		}
 
+	}
+	
+	private static class PeerConnectionChoker implements Runnable {
+		MessageHandler link;
+		ArrayList<Integer> weAreChoking;
+		private PeerConnectionChoker(MessageHandler l, ArrayList<Integer> choke) {
+			link = l;
+			weAreChoking = choke;
+		}
+		@Override
+		public void run() {
+			try {
+				if(weAreChoking.size() == 1) {
+					optimisticUnchoke.take();
+					weAreChoking.remove(0);
+					link.sendMessage(MessageHandler.UNCHOKE);
+					Thread.sleep(30000);
+					if(weAreChoking.size() == 0)
+						weAreChoking.add(1);
+					link.sendMessage(MessageHandler.CHOKE);
+					optimisticUnchoke.put(1);
+				}
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			
+		}
+	
 	}
 
 	private static class PeerConnectionEstablisher implements Runnable {
@@ -863,10 +897,11 @@ public class RUBTClient {
 		torrentInfo = parseFile(args[0]);
 		pieceAccess = new LinkedBlockingQueue<Integer>();
 		peerIDLocker = new LinkedBlockingQueue<Integer>();
+		optimisticUnchoke = new LinkedBlockingQueue<Integer>();
 		try {
 			peerIDLocker.put(1);
+			optimisticUnchoke.put(1);
 		} catch (InterruptedException e3) {
-			// TODO Auto-generated catch block
 			e3.printStackTrace();
 		}
 		piecesCompleted = new boolean[torrentInfo.piece_hashes.length];
