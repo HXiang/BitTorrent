@@ -712,6 +712,61 @@ public class RUBTClient {
 		return bytes;
 	}
 
+	public static ArrayList<Integer> locatePeer(String peerID) {
+		for(int i=0; i < peerList.size(); i++) {
+			if(peerID == peerList.get(i).peerid) {
+				return peerList.get(i).bitfield;
+			}
+		}
+		System.out.println("Not in connection list?");
+		System.out.println(peerID);
+		return null;
+	}
+
+	public static ArrayList<numPieces> findRarestPiece() {
+		ArrayList<numPieces> pieceCounts = new ArrayList<numPieces>(torrentInfo.piece_hashes.length);
+		for(int n=0; n < torrentInfo.piece_hashes.length; n++) {
+			pieceCounts.add(new numPieces(n)); //filling with piece indexes from 0 to pieces_hashes.length
+		}
+		for(int i=0; i < peerList.size(); i++) { //finding the pieces in the peerlist peers' bitfields and adding to ubiquity if matches are found
+			for(int x=0; x < pieceCounts.size(); x++) {
+				for(int j=0; j < peerList.get(i).bitfield.size(); j++) {
+					if(pieceCounts.get(x).getPieceInd() == peerList.get(i).bitfield.get(j)) {
+						pieceCounts.get(x).moreUbiquity();
+					}
+				}
+			}
+		}
+		Collections.sort(pieceCounts);
+		return pieceCounts;
+		
+	}
+	
+	private static class numPieces implements Comparable<numPieces> {
+		private int pieceInd;
+		private Integer ubiquity;
+		
+		public int getPieceInd() {
+			return pieceInd;
+		}
+		
+		public int getUbiquity() { //returns int but actually returns Integer, hmm...
+			return ubiquity;
+		}
+		
+		public void moreUbiquity() {
+			ubiquity++;
+		}
+		
+		public numPieces(int pieceInd) {
+			this.pieceInd = pieceInd;
+			this.ubiquity = 0;
+		}
+		
+		public int compareTo(numPieces other) {
+			return ubiquity.compareTo(other.ubiquity);
+		}
+	}
 
 
 	public static void setAvailablePieces(ArrayList<Integer> piecesHeld, ByteBuffer message) {
