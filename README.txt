@@ -1,0 +1,3 @@
+Here are the instructions for importing and running this project.
+
+First, in Eclipse, go to Import Existing Projects. Find the root directory for this project (the group20 folder), and select the project. The JDK and JRE compliance levels are 1.6. Then, click Run for RUBTClient (the main method), setting the Run Configurations to take the arguments Phase2.torrent and anything.mp4. The program will also create a progress.ser file. Clicking within the console and pressing "Enter" will allow you to end the program, saving the partially downloaded file.
